@@ -1,6 +1,6 @@
 library(expm)
 
-test_that('Sample Covariance', {
+test_that('sample_covariance is symmetric and matches the built-in version.', {
   set.seed(123)
 
   n_samples <- 100
@@ -17,7 +17,7 @@ test_that('Sample Covariance', {
   expect_equal(sigma, expected_sigma)
 })
 
-test_that('Matrix Square Root', {
+test_that('matrix_sqrt matches the version in the expm package.', {
   set.seed(123)
 
   n_samples <- 100

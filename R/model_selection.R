@@ -4,7 +4,7 @@ train_test_split <- function(X, y = NULL, test_size = 0.2, shuffle = TRUE, seed 
     y <- as.matrix(y)
   }
 
-  if (nrow(X) != nrow(y)) {
+  if (!is.null(y) && nrow(X) != nrow(y)) {
     stop("`X` and `y` must have the same number of rows.")
   }
 

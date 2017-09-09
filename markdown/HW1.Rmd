@@ -18,6 +18,7 @@ library(MASS)
 ```{r echo = FALSE}
 read_chunk('../R/linalg.R')
 read_chunk('../R/neighbors.R')
+read_chunk('../R/model_selection.R')
 ```
 
 ## Name: Joshua Loyal (jloyal2@illinois.edu)
@@ -87,13 +88,13 @@ nearest_neighbors(X, x_query = x, k = 5)
 Finally, we can make predictions by taking the sample average of the k-nearest neighbors.
 
 ```{r predict_nearest_neighbor}
-<<predict_knn>>
+<<predict_knn_single>>
 ```
 
 For the point $x = (0.5, 0.5, 0.5, 0.5)^T$ we have
 
 ```{r 1.b answer}
-predict_knn(X, Y, x_query = x, k = 5)
+predict_knn_single(X, Y, x_query = x, k = 5)
 ```
 
 c) Write another function `mydist2 <- function(x1, x2, s)` that returns the Mahalanobis distance between any two vectors `x1` and `x2` using any covariance matrix `s`. Redo the steps in b) to find the 5-NN estimation based on this Mahalanobis distance with `s` $= \hat{\Sigma}$.
@@ -110,7 +111,40 @@ where $\Sigma$ is the covariance matrix.
 Repeating 1.b with the new distance function and the $\Sigma$ matrix calculated in 1.a:
 
 ```{r 1.c answer}
-predict_knn(X, Y, x_query = x, k = 5, dist_func = mydist2, s = sigma)
+predict_knn_single(X, Y, x_query = x, k = 5, dist_func = mydist2, s = sigma)
 ```
 
 d) Which estimator seems to perform better? Can you give an explanation?
+
+To evaluate the efficiency we create a train-test split of the dataset
+```{r}
+<<train_test_split>>
+```
+
+```{r}
+<<predict_knn>>
+```
+
+```{r}
+mean_squared_error <- function(y_true, y_pred) {
+  mean( (y_true - y_pred)^2 )
+}
+
+splits <- train_test_split(X, Y)
+
+# euclidean distance
+preds <- predict_knn(X = splits$X_train, Y = splits$y_train, X_query = splits$X_test, 
+                     k = 5)
+print(mean_squared_error(preds, splits$y_test))
+
+# Mahalanobis distance
+mydist3 <- function(x, y, s) {
+  mahalanobis(x, center = y, cov = s)
+}
+sigma = sample_covariance(splits$X_train)
+preds <- predict_knn(X = splits$X_train, Y = splits$y_train, X_query = splits$X_test, 
+                     k = 5, dist_func = mydist3, s = sigma)
+print(mean_squared_error(preds, splits$y_test))
+```
+
+

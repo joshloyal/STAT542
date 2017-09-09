@@ -1,3 +1,5 @@
+## @knitr train_test_split
+
 #' Create a train-test split of a dataset.
 train_test_split <- function(X, y = NULL, test_size = 0.2, shuffle = TRUE, seed = 123) {
   if (is.vector(y)) {
@@ -38,3 +40,5 @@ train_test_split <- function(X, y = NULL, test_size = 0.2, shuffle = TRUE, seed 
     y_test = y_test
   )
 }
+
+## @knitr end-of-train_test_split

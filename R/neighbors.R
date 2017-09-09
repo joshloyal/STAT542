@@ -35,7 +35,9 @@ mydist2 <- function(x1, x2, s) {
     stop('`s` must be square and nrow = ncol = lengh(xi)')
 
   diff <- matrix(x1 - x2, nrow = 1)
-  as.numeric(sqrt(diff %*% solve(s) %*% t(diff)))
+  s_inv <- solve(s)
+
+  as.numeric(sqrt(diff %*% s_inv %*% t(diff)))
 }
 
 ## @knitr end-of-mahalanobis_distance
@@ -78,9 +80,9 @@ nearest_neighbors <- function(X, x_query, k, dist_func = mydist, ...) {
 
 ## @knitr end-of-nearest_neighbors
 
-## @knitr predict_knn
+## @knitr predict_knn_single
 
-#' K-Nearest Neighbor Predictions
+#' K-Nearest Neighbor Predictions for a Single Data-Point
 #'
 #' Make predictions on a data point \code{x_query}
 #' based on the k-nearest neighbors in the dataset
@@ -94,9 +96,20 @@ nearest_neighbors <- function(X, x_query, k, dist_func = mydist, ...) {
 #' @param dist_func function used to calculate the distance between two points.
 #' @param ... These arguments are passed into \code{dist_func}.
 #' @return A single prediction for \code{x_query}.
-predict_knn <- function(X, Y, x_query, k, dist_func = mydist, ...) {
+predict_knn_single <- function(X, Y, x_query, k, dist_func = mydist, ...) {
   neighbors <- nearest_neighbors(X, x_query = x_query, k = k, dist_func = dist_func, ...)
   mean(Y[neighbors])
+}
+
+## @knitr end-of-predict_knn_single
+
+## @knitr predict_knn
+
+predict_knn <- function(X, Y, X_query, k, dist_func = mydist, ...) {
+  knn.predict <- function(x_query) {
+    predict_knn_single(X = X, Y = Y, x_query = x_query, k = k, dist_func = dist_func, ...)
+  }
+  apply(X_query, 1, knn.predict)
 }
 
 ## @knitr end-of-predict_knn

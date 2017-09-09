@@ -27,3 +27,10 @@ test_that('knn predictions using all the data returns the sample mean.', {
 
   expect_equal(pred, mean(Y))
 })
+
+test_that('knn predictions on k < n_samples is not the mean.', {
+  x <- c(0.5, 0.5, 0.5, 0.5)
+  pred <- predict_knn(X, Y, x_query = x, k = 5)
+
+  expect_false(identical(pred, mean(Y)))
+})

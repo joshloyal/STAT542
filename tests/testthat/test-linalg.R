@@ -1,8 +1,10 @@
+context("linear-algebra")
+
 library(expm)
 
-test_that('sample_covariance is symmetric and matches the built-in version.', {
-  set.seed(123)
+set.seed(123)
 
+test_that('sample_covariance is symmetric and matches the built-in version.', {
   n_samples <- 100
   n_features <- 4
 
@@ -18,8 +20,6 @@ test_that('sample_covariance is symmetric and matches the built-in version.', {
 })
 
 test_that('matrix_sqrt matches the version in the expm package.', {
-  set.seed(123)
-
   n_samples <- 100
   n_features <- 4
 

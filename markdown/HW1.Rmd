@@ -1,7 +1,6 @@
 ---
 title: 'HW #1 (STAT 542, Fall 2017)'
-author: "Joshua Loyal"
-date: "September 7, 2017"
+date: "September 18, 2017"
 output:
   pdf_document: default
   html_document: default
@@ -9,19 +8,37 @@ output:
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
-knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+knitr::opts_chunk$set(fit.align = 'center')
+options(markdown.extensions = c('latex_macros'))
 
-library(knitr)
-library(MASS)
+# set inline number of digits to two
+n_digits = 2
+inline_hook <- function(x) {
+    if(is.numeric(x)) x <- round(x, n_digits)
+    paste(as.character(x), collapse=", ")
+}
+knitr::knit_hooks$set(inline = inline_hook)
+
+pacman::p_load(knitr)
+pacman::p_load(MASS)
+pacman::p_load(GGally)
+pacman::p_load(devtools)
+pacman::p_load(tidyverse)
+pacman::p_load(kknn)
+pacman::p_load(caret)
+pacman::p_load(ElemStatLearn)
+pacman::p_load(foreach)
+pacman::p_load(doMC)
+
+# use all the cores. yolo
+registerDoMC(cores = detectCores())
 ```
 
-```{r echo = FALSE}
-read_chunk('../R/linalg.R')
-read_chunk('../R/neighbors.R')
-read_chunk('../R/model_selection.R')
-```
-
-## Name: Joshua Loyal (jloyal2@illinois.edu)
+<!-- Latex Macros -->
+\newcommand{\Cov}[2]{\mathrm{Cov}\left(#1,\ #2\right)}
+\newcommand{\Trace}[1]{\mathrm{Trace}\left( #1 \right)}
+\newcommand{\mat}[1]{\mathbf{ #1 }}
 
 # Question 1
 
@@ -33,13 +50,28 @@ $$\hat{\Sigma} = \frac{1}{n} \sum_{k = 1}^{n}(X_i - \bar{X})^{T}(X_{i} - \bar{X}
 where $X_i \in \mathbb{R}^{p \times 1}$ and $\bar{X}$ is the sample mean. This is calculated by the following function:
 
 ```{r covariance}
-<<sample_covariance>>
+#' Sample Variance-Covariance Matrix
+#'
+#' Calculates the sample variance-covariance matrix using the biased MLE estimate.
+#'
+#' @param X A matrix of shape [n_samples, n_features].
+#' @return The covariance matrix of \code{X}. Has shape [n_features, n_features].
+sample_covariance <- function(X) {
+  n_samples <- nrow(X)
+
+  # center the data matrix first
+  X <- scale(X, center = TRUE, scale = FALSE)
+
+  (1 / n_samples) * t(X) %*% X
+}
 ```
 
 Using this function we can calculate the $\hat{\Sigma}$ matrix of the given data.
 
 ```{r data generation}
 set.seed(1)
+
+# generate toy dataset
 P = 4
 N = 200
 rho = 0.5
@@ -48,6 +80,7 @@ X = as.matrix(mvrnorm(N, mu=rep(0,P), Sigma=V))
 beta = as.matrix(c(1, 1, 0.5, 0.5))
 Y = X %*% beta + rnorm(N)
 
+# sigma-hat calculation
 (sigma <- sample_covariance(X))
 ```
 
@@ -57,8 +90,28 @@ $$ \Sigma = Q \Lambda Q^{-1} \Rightarrow \Sigma^{\frac{1}{2}} = Q \sqrt{\Lambda}
 where $Q$ is the matrix eigen-vectors of $\Sigma$ and $\Lambda$ is a matrix with the eigenvalues on the diagonal. Once we have $\Sigma^{\frac{1}{2}}$ we can invert it to get $\Sigma^{-\frac{1}{2}}$. In R:
 
 ```{r matrix_root}
-<<matrix_sqrt>>
+#' Matrix Square Root
+#'
+#' Calculates the square root of a matrix by using its spectral decomposition.
+#'
+#' @param X A matrix
+#' @param symmetric If \code{TRUE}, the matrix is assumed to be symmetric.
+#'   Passed to \code{eigen}.
+#' @return A matrix of the same shape as \code{X}.
+matrix_sqrt <- function(X, symmetric = FALSE) {
+  # Perform the spectral decomposition.
+  # Covariance matrices are symmetric, so we should pass on this optimization.
+  X_eig <- eigen(X, symmetric = symmetric)
 
+  # extract the Q eigen-vector matrix and the eigen-values
+  Q <- X_eig$vectors
+  values <- X_eig$values
+  Q_inv <- solve(Q) # Q^{-1}
+
+  Q %*% diag(sqrt(values)) %*% Q_inv
+}
+
+# inverse of the matrix square-root of sigma (sigme^{-1/2})
 solve(matrix_sqrt(sigma, symmetric = TRUE))
 ```
 
@@ -68,27 +121,90 @@ that will return the Euclidean distance between any two vectors `x1` and `x2`. C
 First we need to write a function that calculates the euclidean distance between any two vectors:
 
 ```{r mydist}
-<<euclidean_distance>>
+#' Euclidean Distance
+#'
+#' Calculates the euclidean distance between two vectors
+#' \code{x1} and \code{x2}.
+#'
+#' @param x1,x2 numeric vectors.
+#' @return the euclidean distance between the inputs.
+mydist <- function(x1, x2) {
+  # sanity check that x1 and x2 have the same number of features.
+  if (length(x1) != length(x2))
+    stop("`x1` and `x2` must be the same length.")
+
+  sqrt(sum((x1 - x2)^2))
+}
 ```
 
 Then to find the k-nearest neighbors to a vector $y$ we need a function the calculates the
 distance between $y$ and all points in a data matrix $X$, and then returns the $k$ smallest elements.
 
 ```{r nearest_neighbors_func}
-<<nearest_neighbors>>
+#' Nearest Neighbors
+#'
+#' Find the k nearest neighbors from a point \code{x_query}
+#' and all rows in a dataset \code{X}.
+#'
+#' @param X Feature matrix of shape [n_samples, n_features].
+#' @param x_query A single vector of shape [n_features].
+#' @param k The number of nearest neighbors to compute.
+#' @param dist_func A function that defines a valid distance.
+#'   The default is euclidean distance.
+#' @param ... These parameters are passed into \code{dist_func}.
+#' @return The indices of the k-nearest neighbors.
+nearest_neighbors <- function(X, x_query, k, dist_func = mydist, ...) {
+  # If k >= the number of points they are
+  # all nearest-neighbors
+  if (k >= nrow(X))
+    return(1:nrow(X))
+
+  # bind distance function to the query vector
+  partial_dist <- function(x) {
+    dist_func(x, x_query, ...)
+  }
+
+  # row-wise distances
+  distances <- apply(X, 1, partial_dist)
+
+  # kth smallest values
+  max_value <- sort(distances, partial = k)[k]
+
+  # indices that are less than or equal to the kth smallest value
+  # are the nearest-neighbors
+  which(distances <= max_value)[1:k]
+}
 ```
 
-We can use this function to find the distance between $x = (0.5, 0.5, 0.5, 0.5)^T$ and $X$.
+We can use this function to find the nearest-neighbors of $x = (0.5, 0.5, 0.5, 0.5)^T$ in the dataset $X$:
 
 ```{r 5-NN}
 x <- c(0.5, 0.5, 0.5, 0.5)
+
 nearest_neighbors(X, x_query = x, k = 5)
 ```
 
 Finally, we can make predictions by taking the sample average of the k-nearest neighbors.
 
 ```{r predict_nearest_neighbor}
-<<predict_knn_single>>
+#' K-Nearest Neighbor Predictions for a Single Data-Point
+#'
+#' Make predictions on a data point \code{x_query}
+#' based on the k-nearest neighbors in the dataset
+#' \code{X}. Predictions are made by averaging the
+#' \code{Y} values of the k-neighest neighbors.
+#'
+#' @param X dataset of shape [n_samples, n_features]
+#' @param Y target vector of shape [n_samples]
+#' @param x_query vector of shape [n_features] to make predictions on.
+#' @param k number of nearest neighbors to use for predictions.
+#' @param dist_func function used to calculate the distance between two points.
+#' @param ... These arguments are passed into \code{dist_func}.
+#' @return A single prediction for \code{x_query}.
+predict_knn_single <- function(X, Y, x_query, k, dist_func = mydist, ...) {
+  neighbors <- nearest_neighbors(X, x_query = x_query, k = k, dist_func = dist_func, ...)
+  mean(Y[neighbors])
+}
 ```
 
 For the point $x = (0.5, 0.5, 0.5, 0.5)^T$ we have
@@ -102,10 +218,29 @@ c) Write another function `mydist2 <- function(x1, x2, s)` that returns the Maha
 The Mahalanobis distance is defined as
 
 $$d(x, y) = \sqrt{(x - y)^T \Sigma^{-1} (x - y)}$$
-where $\Sigma$ is the covariance matrix. 
+where $\Sigma$ is the covariance matrix. In R:
 
 ```{r mahalanobis}
-<<mahalanobis_distance>>
+#' Mahalanobis Distance
+#'
+#' Calculates teh mahalanobis distance between two vectors
+#' \code{x1} and \code{x2} using a arbitrary covariance
+#' matrix \code{s}.
+#'
+#' @param x1,x2 numeric vectors.
+#' @param s covariance matrix.
+#' @return the euclidean distance between the inputs.
+mydist2 <- function(x1, x2, s) {
+  if (length(x1) != length(x2))
+    stop('`x1` and `x2` must have the same length.')
+  if (nrow(s) != length(x1) || ncol(s) != length(x2))
+    stop('`s` must be square and nrow = ncol = lengh(xi)')
+
+  diff <- matrix(x1 - x2, nrow = 1)
+  s_inv <- solve(s)
+
+  as.numeric(sqrt(diff %*% s_inv %*% t(diff)))
+}
 ```
 
 Repeating 1.b with the new distance function and the $\Sigma$ matrix calculated in 1.a:
@@ -117,34 +252,426 @@ predict_knn_single(X, Y, x_query = x, k = 5, dist_func = mydist2, s = sigma)
 d) Which estimator seems to perform better? Can you give an explanation?
 
 To evaluate the efficiency we create a train-test split of the dataset
-```{r}
-<<train_test_split>>
+```{r train_test_split}
+#' Create a train-test split of a dataset.
+#'
+#' For model evaluation it is useful to split a
+#' dataset into a training and testing set. This
+#' helper functions shuffles the dataset and then
+#' splits off `test_size` percentage of the dataset for
+#' testing.
+#'
+#' @param X matrix holding the covariates.
+#' @param y a vector or matrix holding the target vector.
+#' @param test_size A number between 0 and 1 indicating the fraction
+#'    of the dataset to use for testing.
+#' @param shuffle Boolean indicating whether to shuffle the dataset.
+#' @param seed Random seed for the rng.
+#' @return A list containing `X.train`, `X.test`, `y.train`, and
+#'    `y.test`. These are matrices holding the training and testing
+#'    portion of the `X` and `y`.
+train_test_split <- function(X, y = NULL, test_size = 0.2,
+                             shuffle = TRUE, seed = 123) {
+  if (is.vector(y)) {
+    y <- as.matrix(y)
+  }
+
+  if (!is.null(y) && nrow(X) != nrow(y)) {
+    stop("`X` and `y` must have the same number of rows.")
+  }
+
+  if (!is.null(seed)) {
+    set.seed(seed)
+  }
+
+  n_samples <- nrow(X)
+  n_test <- floor(n_samples * test_size)
+  n_train <- n_samples - n_test
+
+  if (shuffle) {
+    indices <- sample(n_samples)
+  } else {
+    indices = 1:n_samples
+  }
+
+  X_train <- X[1:n_train, ]
+  X_test <- X[(n_train + 1):n_samples, ]
+
+  if (!is.null(y)) {
+    y_train <- y[1:n_train]
+    y_test <- y[(n_train + 1):n_samples]
+  } else {
+    y_train <- NULL
+    y_test <- NULL
+  }
+
+  list(X.train = X_train, X.test = X_test,
+       y.train = y_train, y.test = y_test)
+}
+  
+splits <- train_test_split(X, Y)
 ```
 
-```{r}
-<<predict_knn>>
-```
+In addition, we use the following function to return predictions on a query matrix $X$ (as opposed to a single point).
 
 ```{r}
+#' K-Nearest Neighbors Regression
+#'
+#' Make predictions for each point in a query dataset
+#' \code{X_query} based on the k-nearest neighbors in the dataset
+#' \code{X}. Predictions are made by averaging the
+#' \code{Y} values of the k-neighest neighbors.
+#'
+#' @param X matrix of shape [n_samples, n_features]
+#' @param Y target vector of shape [n_samples]
+#' @param X_query matrix of shape [n_queries, n_features] to make predictions on.
+#' @param k number of nearest neighbors to use for predictions.
+#' @param dist_func function used to calculate the distance between two points.
+#' @param ... These arguments are passed into \code{dist_func}.
+#' @return A matrix of prediction for \code{X_query}.
+predict_knn <- function(X, Y, X_query, k, dist_func = mydist, ...) {
+  # wrap `predict_knn_single` to use it in a row-wise apply.
+  knn.predict <- function(x_query) {
+    predict_knn_single(X = X, Y = Y, x_query = x_query, k = k, dist_func = dist_func, ...)
+  }
+  
+  apply(X_query, 1, knn.predict)
+}
+```
+
+Finally, we need a function to determine the mean squared error over new data-points:
+
+```{r mean_squared_error}
+#' Mean Squared Error
 mean_squared_error <- function(y_true, y_pred) {
+  y_true <- as.numeric(y_true)
+  y_pred <- as.numeric(y_pred)
+
   mean( (y_true - y_pred)^2 )
 }
+```
 
-splits <- train_test_split(X, Y)
-
+We then fit a $k = 5$ $k$NN model on the training data and record the mean-squared error on the test-set.
+For the $k$NN model using Euclidean distance:
+```{r euclidean_perf}
 # euclidean distance
-preds <- predict_knn(X = splits$X_train, Y = splits$y_train, X_query = splits$X_test, 
+preds <- predict_knn(X = splits$X.train, Y = splits$y.train, X_query = splits$X.test, 
                      k = 5)
-print(mean_squared_error(preds, splits$y_test))
+(euclidean_error <- mean_squared_error(preds, splits$y.test))
+```
+We perform the same calculation using Mahalanobis distance. Note that we calculate $\hat \Sigma$ only on the training set. 
 
+```{r mahalanobis_perf}
 # Mahalanobis distance
-mydist3 <- function(x, y, s) {
-  mahalanobis(x, center = y, cov = s)
+sigma = sample_covariance(splits$X.train)
+preds <- predict_knn(X = splits$X.train, Y = splits$y.train, X_query = splits$X.test, 
+                     k = 5, dist_func = mydist2, s = sigma)
+(mbs_error <- mean_squared_error(preds, splits$y.test))
+```
+
+In the end we find that the model using Euclidean distance outperforms the model using Mahalanobis distance in terms of mean squared error on the test set. This could happen for a variety of reasons. The benifit of Mahanobis distance is that it puts the co-variates on the same scale. However in this case every $X_i$ is already on roughly the same scale ($X_i \sim N(0, 1)$), so we do not get that benifit over the Euclidean distance metric. In addition, we did not perform a grid-search over the number of nearest neighbors. It could be the case the Mahalonobis distances outperforms Euclidean distance for certain values of $k$.
+
+# Question 2
+
+a) If we are interested in using $k = 5$, derive the degrees of freedom of this model using the given formula.
+
+We are interested in finding the degrees of freedom for a general $k$NN model. In order to do this, lets develop some notation for the $k$NN estimator. We have that
+
+$$ \hat{f}(x) = \frac{1}{k}\sum_{x_i \in N_k(x)} y_i $$
+where $N_k(x)$ stands for the neighborhood of $x$ defined by the $k$ closest points $x_i$ in the training dataset. If we define the following indicator function
+
+$$ 
+w(x_i, x_j) = 
+\begin{cases}
+  1, & \text{if } x_i \in N_k(x_j) \\
+  0, & \text{otherwise}
+\end{cases}
+$$
+
+we can re-write the $k$NN estimator as
+
+$$ \hat{f}(x) = \frac{1}{k}\sum_{i = 1}^N w(x_i, x_j) \ y_i \ . $$
+
+Since the degrees of freedom of an estimator is defined as,
+
+$$ df(\hat f) = \frac{1}{\sigma^2} \sum_{i = 1}^N \Cov{\hat f(x_i)}{y_i} $$
+we can focus on evaluating the covariance inside the sum
+
+$$ 
+\begin{split}
+  \Cov{\hat f(x_j)}{y_j} &= \Cov{\frac{1}{k}\sum_{i = 0}^N w(x_i, x_j) \ y_i}{y_j} \\
+                                &= \frac{1}{k} \sum_{i = 0}^N w(x_i, x_j) \ \Cov{y_i}{y_j} \\
+                                &= \frac{1}{k} \sum_{i = 0}^N w(x_i, x_j) \ \sigma^2 \ \delta_{ij} \quad (\text{assuming } y_i \text{ uncorrelated}) \\
+                                &= \frac{\sigma^2}{k}.
+\end{split}
+$$
+
+Thus,
+
+$$ df(\hat f) = \frac{1}{\sigma^2} \sum_{i = 0}^N \frac{\sigma^2}{k} = \frac{N}{k}.$$
+
+For $k = 5$ we find that $df(\hat f) = \frac{N}{5}$ where $N$ is the number of training samples.
+
+b) Perform the simulation study.
+
+First we generate a design matrix $\mathbf{X}$ from $p$ independent standard normal distribution with $n = 200$ and $p = 4$. 
+
+```{r simulated_features}
+generate_features <- function(n_samples = 200, n_features = 4, seed = NULL) {
+  
+  if (!is.null(seed)) {
+    set.seed(seed)
+  }
+  
+  mu <- rep(0, n_features)
+  cov <- diag(n_features)
+  mvrnorm(n = n_samples, mu = mu, Sigma = cov)
 }
-sigma = sample_covariance(splits$X_train)
-preds <- predict_knn(X = splits$X_train, Y = splits$y_train, X_query = splits$X_test, 
-                     k = 5, dist_func = mydist3, s = sigma)
-print(mean_squared_error(preds, splits$y_test))
+
+X <- generate_features()
+```
+
+Now we will define the true data model as
+
+$$ f(X) = 20x_1 x_2 + 20 x_3^2 + 10 x_4 + \epsilon $$
+
+where $\epsilon \overset{iid}{\sim} N(0, 1)$. In R:
+
+```{r, fig.align = 'center'}
+generate_data <- function(n_samples = 200, n_features = 4, 
+                          seed.X = NULL, seed.Y = NULL) {
+  X <- generate_features(n_samples = n_samples, n_features = n_features, 
+                         seed = seed.X)
+  
+  if (!is.null(seed.Y)) {
+    set.seed(seed.Y)
+  } else {
+    # we un-set the seed here if it was set previously.
+    set.seed(Sys.time())
+  }
+  
+  error <- rnorm(n_samples)
+  Y <- 20 * X[, 1] * X[, 2] + 20 * X[, 3]^2 + 10 * X[, 4] + error
+  
+  list(X = X, Y = Y)
+}
+
+data <- generate_data(seed.X = 1, seed.Y = 1)
+```
+
+Out of interest I also visualized the data in a scatter plot matrix. The univeriate relationships are estimated using a LOESS smoother:
+
+```{r sim_data_vis}
+ggscatmat(as.data.frame(data), alpha = 0.8) + 
+  geom_smooth(se = FALSE) +
+  theme_bw()
 ```
 
 
+We now fit a $k$NN model to this synthetic dataset. Note that I am using `knnreg` and later on `knn3` from the [`caret` package](https://cran.r-project.org/web/packages/caret/caret.pdf). `caret` just wraps `kknn` and `knn` with some performance improvements and a more standard fit/predict interface. Fitting the model in R:
+
+```{r}
+# We use knnreg from the caret package. This is a wrapper around
+# the kknn with speed improvements and a better interface.
+model <- knnreg(data$X, data$Y, k = 5)
+preds <- predict(model, data$X)
+
+head(preds, 10)
+```
+
+We want to get a good estimate for $\Cov{\hat y_i} {y_i}$, so we perform 20 simulations and average the result:
+
+```{r degree_of_freedom}
+n_iter <- 20
+n_samples <- 200
+
+# Each column of these matrices contains the
+# \hat y_i or y_i predicitions for each iteration
+# (a vector of length n_iter).
+y_pred <- matrix(nrow = n_iter, ncol = n_samples)
+y_true <- matrix(nrow = n_iter, ncol = n_samples)
+for (i in 1:n_iter) {
+  # for reproducability we still set the seed for `Y` to be the
+  # iteration number.
+  data <- generate_data(n_samples = n_samples, seed.X = 123, seed.Y = i)
+  model <- knnreg(x = data$X, y = data$Y, k = 5)
+  y_pred[i, ] <- predict(model, data$X)
+  y_true[i, ] <- data$Y
+}
+
+# helper function to calculate the MLE sample covariance between two vectors.
+sample_cov <- function(x, y) {
+  n_samples <- nrow(X)
+
+  scale_factor <- (n_samples - 1) / n_samples
+  
+  scale_factor * cov(x, y)
+}
+
+# sum of row-wise covariances
+(df <- sum(
+  mapply(sample_cov, as.data.frame(y_true), as.data.frame(y_pred))
+))
+```
+
+We see that $d\hat f =$ `r df`, which is close to the theoretical value of $N / k =$ `r n_samples / 5`.
+
+c) Consider the linear model $\mathbf{y = X \beta + \epsilon}$, and the fitted value from linear regression $\mathbf{\hat y = X \hat\beta = X(X^TX)^{-1}X^Ty}$. For simplicity, lets assume the $\epsilon_i$'s are i.i.d normal with mean 0 and variance $\sigma^2$. Recall the alternative definition of the degrees of freedom:
+
+$$df(\hat f) = \frac{1}{\sigma^2} \Trace{ \Cov{ \mathbf{\hat y} }{ \mathbf{y} } }.$$
+
+We want to calculate the theoretical degrees of freedom of the linear regression model. We can apply the definition directly
+
+$$
+\begin{split}
+df(\hat f) &= \frac{1}{\sigma^2} \Trace{ \Cov{X(X^T X)^{-1}X^Ty}{y} } \\
+           &= \frac{1}{\sigma^2} \Trace{ X(X^T X)^{-1}X^T \Cov{y}{y} } \\
+           &= \Trace{ X(X^T X)^{-1}X^T } \quad, \text{ since } \Cov{y}{y} = \sigma^2 \\
+           &= \Trace{ X^T X (X^T X)^{-1} } \\
+           &= \Trace{I_{p \times p}} \\
+           &= p
+\end{split}
+$$
+
+So the theoretical degrees of freedom of the linear regression model is $p$ -- the number of coefficients being estimated.
+ 
+3. Load the `SAheart` dataset from the `ElemStatLearn` package. Conisder the $k$NN model using two variables, `age` and `tobacco` to model the binary outcome `chd` (coronary heart disease) Use 10-fold cross validation to select the best k. Also report your training error and plot the average cross-validation error curve for different choices of k. 
+
+First we load the dataset and visualize the relationship `chd ~ age + tobacco` that we want to model. Note that I am using `dplyr` and `tidry` for a lot of the data wrangling. 
+
+```{r saheart}
+# explicitly cast `chd` as a factor
+saheart <- SAheart %>% 
+  mutate(chd = as.factor(chd))
+
+ggplot(data = saheart, aes(x = age, y = tobacco, color = chd)) + 
+  geom_point() +
+  scale_color_manual(values = c('darkorange', 'deepskyblue')) +
+  theme_bw()
+```
+
+Now we use 10-fold cross-validation to find the best $k$NN model
+
+```{r sahear_model}
+set.seed(123)
+
+n_samples <- nrow(saheart)
+n_folds <- 10
+k_max <- 50
+
+# assign fold indices to the samples
+cv <- sample(rep(1:n_folds, length.out = n_samples))
+
+# matrices to hold train/test error
+test_loss <- matrix(nrow = k_max, ncol = n_folds)
+colnames(test_loss) <- paste0('Fold', 1:n_folds)
+
+train_loss <- matrix(nrow = k_max, ncol = n_folds)
+colnames(train_loss) <- paste0('Fold', 1:n_folds)
+
+# misclassification error metric.
+misclassification_error <- function(y_true, y_pred) {
+ mean(y_true != y_pred)
+}
+
+# exhaustively search over all values of k
+for(k in 1:k_max) {
+  # run each fold in parallel
+  results <- foreach(fold = 1:n_folds, .combine = 'rbind') %dopar% {
+    set.seed(42)
+    
+    # training/testing folds
+    train <- cv != fold
+    test <- cv == fold
+    
+    # fit a model to the training data
+    model <- knn3(chd ~ tobacco + age, data = saheart, subset = train, k = k)
+    
+    # extract predictions / error on training set
+    train_preds <- predict(model, saheart[train, ], type = 'class')
+    train_error <- misclassification_error(saheart[train, 'chd'], train_preds)
+    
+    # extract predicitons / error on test set
+    test_preds <- predict(model, saheart[test, ], type = 'class')
+    test_error <- misclassification_error(saheart[test, 'chd'], test_preds)
+    
+    c(train_error, test_error)
+  }
+  
+  # aggregate the results
+  train_loss[k, ] = results[, 1]
+  test_loss[k, ] = results[, 2]
+}
+
+# the best k value has the minimum mean loss over the folds.
+(best_k <- which.min(rowMeans(test_loss)))
+```
+
+The average training error for $k =$ `r best_k` is `r rowMeans(train_loss)[best_k]`, and the average testing error is `r rowMeans(test_loss)[best_k]`.
+
+Now we visualize the training / testing error curves.
+
+```{r training_curves}
+# add a column indicating the value of k used
+test_data <- as.data.frame(test_loss) %>% 
+  mutate(k = row_number())
+
+train_data <- as.data.frame(train_loss) %>% 
+  mutate(k = row_number()) 
+
+# This dataset has 4 columns (set, k, fold, and error):
+# - set: train or testing set
+# - k: value of k in the kNN fit
+# - fold: Fold1 - Fold10 
+# - error: the value of the error for this value of set, k, and fold.
+# Essentially a 'tidy' dataframe of the train/test error curves.
+data <- bind_rows(list(train = train_data, test = test_data), .id = 'set') %>% 
+  gather(key = fold, value = error, Fold1:Fold10)  
+
+# these are the average error curves for train/test
+grouped_data <- data %>% 
+  group_by(k, set) %>% 
+  summarize(average_error = mean(error))
+
+ggplot(NULL, aes(x = k, color = set)) +
+  # all training / testing error points
+  geom_point(data = data, aes(y = error), alpha = 0.4) +
+  # average training / testing error line
+  geom_line(data = grouped_data, aes(y = average_error), size = 1) +
+  scale_color_manual(values = c(train = 'deepskyblue', test = 'darkorange')) +
+  theme_bw() +
+  theme(panel.grid.minor = element_blank())
+```
+
+Out of curiousity I also plotted the decision boundary of the model validated on the first CV fold.
+
+```{r model_vis}
+set.seed(42)
+
+# visualize by showing decision boundary for the classifier trained on the first fold
+train <- cv != 1
+model <- knn3(chd ~ tobacco + age, data = saheart, subset = train, k = best_k)
+
+# predictions made on an evenly spaced grid over 
+# the ranges of age and tobacco
+var_grid <- expand.grid(
+  age = seq(0, max(saheart$age) + 1, 0.5),
+  tobacco = seq(0, max(saheart$tobacco) + 1, 0.5)
+  ) %>% 
+  # predicted class labels
+  mutate(y_pred = predict(model, ., type = 'class')) %>% 
+  # predicted probabilities (the decision boundary is proba = 0.5)
+  mutate(y_proba = predict(model, .)[, 1])
+
+# plot actual labels and the decision boundary of our classifier
+ggplot(NULL, aes(x = age, y = tobacco)) + 
+  # classification on a grid of points
+  geom_point(data = var_grid, aes(color = y_pred), size = 0.3, alpha = 0.5) +
+  # a scatter plot of the true values
+  geom_point(data = saheart, aes(color = chd))  +  
+  # the proba = 0.5 contour (this is the decision boundary)
+  geom_contour(data = var_grid, aes(z = y_proba), breaks = 0.5, color = 'black') + 
+  scale_color_manual(values = c('darkorange', 'deepskyblue')) +
+  theme_bw() +
+  theme(panel.grid.minor = element_blank())
+```

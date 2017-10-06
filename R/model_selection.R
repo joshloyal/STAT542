@@ -1,7 +1,14 @@
 ## @knitr train_test_split
 
 #' Create a train-test split of a dataset.
-train_test_split <- function(X, y = NULL, test_size = 0.2, shuffle = TRUE, seed = 123) {
+#'
+#' For model evaluation it is useful to split a
+#' dataset into a training and testing set. This
+#' helper functions shuffles the dataset and then
+#' splits of `test_size` percentage of the dataset for
+#' testing.
+train_test_split <- function(X, y = NULL, test_size = 0.2,
+                             shuffle = TRUE, seed = 123) {
   if (is.vector(y)) {
     y <- as.matrix(y)
   }
@@ -10,7 +17,9 @@ train_test_split <- function(X, y = NULL, test_size = 0.2, shuffle = TRUE, seed 
     stop("`X` and `y` must have the same number of rows.")
   }
 
-  set.seed(seed)
+  if (!is.null(seed)) {
+    set.seed(seed)
+  }
 
   n_samples <- nrow(X)
   n_test <- floor(n_samples * test_size)
@@ -34,11 +43,23 @@ train_test_split <- function(X, y = NULL, test_size = 0.2, shuffle = TRUE, seed 
   }
 
   list(
-    X_train = X_train,
-    X_test = X_test,
-    y_train = y_train,
-    y_test = y_test
+    X.train = X_train,
+    X.test = X_test,
+    y.train = y_train,
+    y.test = y_test
   )
 }
 
 ## @knitr end-of-train_test_split
+
+#' Generate fold indices for K-Fold Cross-Validation
+kfold_cv <- function(X, y = NULL, n_folds = 5, seed = 123) {
+
+  if (!is.null(seed)) {
+    set.seed(seed)
+  }
+
+  n_samples <- nrow(X)
+
+  as.factor(sample(rep(1:n_folds, length.out = n_samples)))
+}

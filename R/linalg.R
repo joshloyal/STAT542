@@ -14,8 +14,19 @@ sample_covariance <- function(X) {
 
   (1 / n_samples) * t(X) %*% X
 }
-
 ## @knitr end-of-sample_covariance
+
+## @knitr sample_cov
+
+sample_cov <- function(x, y) {
+  n_samples <- nrow(X)
+
+  scale_factor <- (n_samples - 1) / n_samples
+
+  scale_factor * cov(x, y)
+}
+
+## @knitr endo-of-sample_cov
 
 ## @knitr matrix_sqrt
 
